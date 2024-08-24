@@ -1,0 +1,20 @@
+# Ignorar arquivos de configuração do ambiente
+.env
+
+# Ignorar diretórios de dependências
+node_modules/
+
+# Ignorar arquivos de log
+*.log
+
+# Ignorar diretórios de builds
+dist/
+build/
+
+# Ignorar arquivos temporários
+*.tmp
+*.temp
+
+# Ignorar caches do editor
+.vscode/
+.idea/
