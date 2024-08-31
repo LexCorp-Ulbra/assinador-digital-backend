@@ -11,6 +11,8 @@ mongoose.connect(process.env.MONGO_URI)
 .catch(err => console.log(err));
 
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api', require('./routes/keys'));
+app.use('/api', require('./routes/documents'));
 
 app.listen(PORT, () => {
     console.log(`Servidor na porta: ${PORT}`);
