@@ -9,10 +9,12 @@ router.post("/documents", authenticateToken, async (req, res) => {
   const { title, content, signDocument } = req.body;
 
   let signature = null;
+  let signedAt = null;
   if (signDocument) {
+    signedAt = new Date();
     const user = await User.findById(req.user.id);
     const sign = crypto.createSign("SHA256");
-    sign.update(content);
+    sign.update(content + signedAt);
     sign.end();
     signature = sign.sign(user.privateKey, "hex");
   }
@@ -23,6 +25,7 @@ router.post("/documents", authenticateToken, async (req, res) => {
     signedBy: signDocument ? req.user.id : null,
     signature,
     createdBy: req.user.id,
+    signedAt,
   });
 
   try {
@@ -56,15 +59,17 @@ router.post("/documents/:id/sign", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Este documento já foi assinado" });
     }
 
+    const signedAt = new Date();
     const user = await User.findById(req.user.id);
     const sign = crypto.createSign("SHA256");
-    sign.update(document.content);
+    sign.update(document.content + signedAt);
     sign.end();
 
     const signature = sign.sign(user.privateKey, "hex");
 
     document.signedBy = req.user.id;
     document.signature = signature;
+    document.signedAt = signedAt;
 
     await document.save();
 
@@ -83,6 +88,18 @@ router.get("/documents", authenticateToken, async (req, res) => {
       { path: "signedBy", select: "username email publicKey" },
     ]);
     res.status(200).json(documents);
+  } catch (error) {
+    res.status(500).json({ error: "Erro ao buscar documentos" });
+  }
+});
+
+router.get("/documents/mydocuments", authenticateToken, async (req, res) => {
+  try {
+    const documents = await Document.find({ createdBy: req.user.id }).populate([
+      { path: "createdBy", select: "username email publicKey" },
+      { path: "signedBy", select: "username email publicKey" },
+    ]);
+    res.json(documents);
   } catch (error) {
     res.status(500).json({ error: "Erro ao buscar documentos" });
   }
@@ -110,6 +127,7 @@ router.post("/documents/validate", authenticateToken, async (req, res) => {
 
   try {
     const document = await Document.findById(documentId).populate("signedBy");
+
     if (!document || !document.signedBy) {
       return res
         .status(400)
@@ -117,7 +135,7 @@ router.post("/documents/validate", authenticateToken, async (req, res) => {
     }
 
     const verify = crypto.createVerify("SHA256");
-    verify.update(document.content);
+    verify.update(document.content + document.signedAt);
     verify.end();
 
     const isValid = verify.verify(
@@ -126,23 +144,10 @@ router.post("/documents/validate", authenticateToken, async (req, res) => {
       "hex"
     );
 
-    res.status(200).json({ valid: isValid });
+    res.status(200).json({ valid: isValid, signedAt: document.signedAt });
   } catch (error) {
     res.status(500).json({ error: "Erro ao validar assinatura" });
   }
 });
-
-router.get("/documents/my-documents", authenticateToken, async (req, res) => {
-  try {
-    const documents = await Document.find().populate([
-      { path: "createdBy", select: "username email publicKey" },
-      { path: "signedBy", select: "username email publicKey" },
-    ]);
-    res.status(200).json(documents);
-  } catch (error) {
-    res.status(500).json({ error: "Erro ao buscar documentos do usuário" });
-  }
-});
-
 
 module.exports = router;

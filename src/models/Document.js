@@ -27,6 +27,10 @@ const DocumentSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  signedAt: {
+    type: Date,
+    default: null,
+  },
 });
 
 const Document = mongoose.model("Document", DocumentSchema);
