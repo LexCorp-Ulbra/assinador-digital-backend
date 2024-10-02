@@ -3,7 +3,119 @@ const crypto = require("crypto");
 const Document = require("../models/Document");
 const User = require("../models/User");
 const authenticateToken = require("../middleware/authenticateToken");
+const forge = require("node-forge");
+const fs = require("fs");
+const multer = require("multer");
+const path = require("path");
 const router = express.Router();
+const upload = multer({ dest: "documentos/" });
+
+router.post(
+  "/documents/sign",
+  upload.fields([
+    { name: "documento", maxCount: 1 },
+    { name: "chavePrivada", maxCount: 1 },
+  ]),
+  (req, res) => {
+    if (!req.files || !req.files["documento"] || !req.files["chavePrivada"]) {
+      return res
+        .status(400)
+        .send("Documento e chave privada são obrigatórios.");
+    }
+
+    const documentoPath = path.join(
+      __dirname,
+      "../",
+      req.files["documento"][0].path
+    );
+    const documento = fs.readFileSync(documentoPath, "utf8");
+
+    const chavePrivadaPath = path.join(
+      __dirname,
+      "../",
+      req.files["chavePrivada"][0].path
+    );
+    const privateKeyPem = fs.readFileSync(chavePrivadaPath, "utf8");
+    const privateKey = forge.pki.privateKeyFromPem(privateKeyPem);
+
+    const md = forge.md.sha256.create();
+    md.update(documento, "utf8");
+
+    const assinatura = privateKey.sign(md);
+    const assinaturaBase64 = forge.util.encode64(assinatura);
+
+    const assinaturaPath = "documentos/assinatura_digital.txt";
+    fs.writeFileSync(assinaturaPath, assinaturaBase64);
+
+    res.download(assinaturaPath, "assinatura_digital.txt", (err) => {
+      if (err) {
+        console.error("Erro ao enviar arquivo:", err);
+      } else {
+        console.log("Arquivo de assinatura enviado.");
+      }
+    });
+  }
+);
+
+router.post(
+  "/documents/validate",
+  upload.fields([
+    { name: "assinaturaDigital", maxCount: 1 },
+    { name: "documento", maxCount: 1 },
+    { name: "certificado", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      if (
+        !req.files ||
+        !req.files["assinaturaDigital"] ||
+        !req.files["documento"] ||
+        !req.files["certificado"]
+      ) {
+        return res
+          .status(400)
+          .send(
+            "Todos os arquivos são obrigatórios: assinaturaDigital, documento e certificado."
+          );
+      }
+
+      const assinaturaPath = path.join(
+        __dirname,
+        "../",
+        req.files["assinaturaDigital"][0].path
+      );
+      const documentoPath = path.join(
+        __dirname,
+        "../",
+        req.files["documento"][0].path
+      );
+      const certificadoPath = path.join(
+        __dirname,
+        "../",
+        req.files["certificado"][0].path
+      );
+
+      const assinaturaBase64 = fs.readFileSync(assinaturaPath, "utf8");
+      const documento = fs.readFileSync(documentoPath, "utf8");
+      const certificadoPem = fs.readFileSync(certificadoPath, "utf8");
+
+      const assinatura = forge.util.decode64(assinaturaBase64);
+
+      const cert = forge.pki.certificateFromPem(certificadoPem);
+      const publicKey = cert.publicKey;
+
+      const md = forge.md.sha256.create();
+      md.update(documento, "utf8");
+
+      const isValid = publicKey.verify(md.digest().bytes(), assinatura);
+
+      res.status(200).json({ valid: isValid });
+    } catch (error) {
+      console.error("Erro ao validar assinatura:", error);
+      res.status(500).json({ error: "Erro ao validar assinatura" });
+    }
+  }
+);
 
 router.post("/documents", authenticateToken, async (req, res) => {
   const { title, content, signDocument } = req.body;
@@ -122,32 +234,32 @@ router.get("/documents/:id", authenticateToken, async (req, res) => {
   }
 });
 
-router.post("/documents/validate", authenticateToken, async (req, res) => {
-  const { documentId, signature } = req.body;
+// router.post("/documents/validate", authenticateToken, async (req, res) => {
+//   const { documentId, signature } = req.body;
 
-  try {
-    const document = await Document.findById(documentId).populate("signedBy");
+//   try {
+//     const document = await Document.findById(documentId).populate("signedBy");
 
-    if (!document || !document.signedBy) {
-      return res
-        .status(400)
-        .json({ error: "Documento não assinado ou inexistente" });
-    }
+//     if (!document || !document.signedBy) {
+//       return res
+//         .status(400)
+//         .json({ error: "Documento não assinado ou inexistente" });
+//     }
 
-    const verify = crypto.createVerify("SHA256");
-    verify.update(document.content + document.signedAt);
-    verify.end();
+//     const verify = crypto.createVerify("SHA256");
+//     verify.update(document.content + document.signedAt);
+//     verify.end();
 
-    const isValid = verify.verify(
-      document.signedBy.publicKey,
-      signature,
-      "hex"
-    );
+//     const isValid = verify.verify(
+//       document.signedBy.publicKey,
+//       signature,
+//       "hex"
+//     );
 
-    res.status(200).json({ valid: isValid, signedAt: document.signedAt });
-  } catch (error) {
-    res.status(500).json({ error: "Erro ao validar assinatura" });
-  }
-});
+//     res.status(200).json({ valid: isValid, signedAt: document.signedAt });
+//   } catch (error) {
+//     res.status(500).json({ error: "Erro ao validar assinatura" });
+//   }
+// });
 
 module.exports = router;
