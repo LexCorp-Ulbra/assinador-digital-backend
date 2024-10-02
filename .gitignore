@@ -18,3 +18,6 @@ build/
 # Ignorar caches do editor
 .vscode/
 .idea/
+
+#Ignorar pasta com os documentos gerados (futuramente excluir os documentos gerados automaticamente)
+documentos
