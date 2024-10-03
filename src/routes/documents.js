@@ -7,138 +7,206 @@ const forge = require("node-forge");
 const fs = require("fs");
 const multer = require("multer");
 const path = require("path");
+const archiver = require("archiver"); // Biblioteca para criar ZIPs
 const router = express.Router();
-const upload = multer({ dest: "documentos/" }); // Caminho para onde o multer irá enviar os arquivos recebidos (uma pasta será criada no repositorio automaticamente)
+const upload = multer({ dest: "documentos/" }); // Configuração do multer
 
-router.post(
-  "/documents/sign", // Definindo a rota POST para assinar documentos
-  upload.fields([
-    // Configuração do multer para receber os arquivos (documento e chave privada)
-    { name: "documento", maxCount: 1 }, // Aceita um arquivo chamado 'documento'
-    { name: "chavePrivada", maxCount: 1 }, // Aceita um arquivo chamado 'chavePrivada'
-  ]),
-  (req, res) => {
-    // Verifica se ambos os arquivos (documento e chave privada) foram enviados
-    if (!req.files || !req.files["documento"] || !req.files["chavePrivada"]) {
-      return res
-        .status(400)
-        .send("Documento e chave privada são obrigatórios.");
+
+// Rota para validar a assinatura do documento existente
+router.post("/documents/:id/validate", authenticateToken, upload.single('signature'), async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    console.log(`Recebendo requisição para validar assinatura do documento ID: ${id}`);
+    const document = await Document.findById(id).populate("signedBy");
+    console.log("Documento encontrado:", document);
+
+    if (!document) {
+      console.log("Documento não encontrado.");
+      return res.status(404).json({ error: "Documento não encontrado." });
     }
 
-    // Caminho completo do arquivo de documento recebido
-    const documentoPath = path.join(
-      __dirname,
-      "../",
-      req.files["documento"][0].path
-    );
-    // Leitura do conteúdo do documento
-    const documento = fs.readFileSync(documentoPath, "utf8");
+    if (!document.signature || !document.certificate) {
+      console.log("Documento não está assinado.");
+      return res.status(400).json({ error: "Este documento não está assinado." });
+    }
 
-    // Caminho completo do arquivo da chave privada recebida
-    const chavePrivadaPath = path.join(
-      __dirname,
-      "../",
-      req.files["chavePrivada"][0].path
-    );
-    // Leitura e conversão da chave privada de PEM para o formato de objeto usável pelo Forge
-    const privateKeyPem = fs.readFileSync(chavePrivadaPath, "utf8");
-    const privateKey = forge.pki.privateKeyFromPem(privateKeyPem);
+    // Recuperar o conteúdo do documento
+    const documentContent = document.content;
+    console.log("Conteúdo do Documento:", documentContent);
 
-    // Criar o hash do documento usando SHA-256
-    const md = forge.md.sha256.create();
-    md.update(documento, "utf8");
+    // Variável para armazenar a assinatura a ser validada
+    let signatureBuffer;
 
-    // Assinar o hash do documento com a chave privada
-    const assinatura = privateKey.sign(md);
-    // Converter a assinatura para Base64 para facilitar o armazenamento e manipulação
-    const assinaturaBase64 = forge.util.encode64(assinatura);
+    if (req.file) {
+      // Se um arquivo de assinatura foi enviado, use-o
+      const uploadedSignaturePath = req.file.path;
+      const uploadedSignature = fs.readFileSync(uploadedSignaturePath, 'utf8');
+      
+      // Supondo que a assinatura no arquivo está em Base64
+      signatureBuffer = Buffer.from(uploadedSignature, 'base64');
+      console.log("Assinatura enviada via upload:", uploadedSignature);
 
-    // Definir o caminho para salvar o arquivo da assinatura digital
-    const assinaturaPath = "documentos/assinatura_digital.txt";
-    // Salvar a assinatura digital em um arquivo
-    fs.writeFileSync(assinaturaPath, assinaturaBase64);
+      // Remova o arquivo temporário após a leitura
+      fs.unlinkSync(uploadedSignaturePath);
+    } else {
+      // Se não houver arquivo enviado, use a assinatura armazenada no banco de dados
+      const signatureBase64 = document.signature;
+      signatureBuffer = Buffer.from(signatureBase64, 'base64');
+      console.log("Assinatura armazenada no banco de dados:", signatureBase64);
+    }
 
-    // Enviar o arquivo de assinatura digital para o cliente como download
-    res.download(assinaturaPath, "assinatura_digital.txt", (err) => {
-      if (err) {
-        console.error("Erro ao enviar arquivo:", err);
-      } else {
-        console.log("Arquivo de assinatura enviado.");
-      }
+    // Converter o certificado PEM para objeto
+    const cert = forge.pki.certificateFromPem(document.certificate);
+    const publicKeyPem = forge.pki.publicKeyToPem(cert.publicKey);
+    const publicKey = crypto.createPublicKey(publicKeyPem);
+    console.log("Chave pública extraída do certificado:", publicKeyPem);
+
+    // Verificar a assinatura usando o módulo crypto
+    const verify = crypto.createVerify("SHA256");
+    verify.update(documentContent);
+    verify.end();
+
+    const isValid = verify.verify(publicKey, signatureBuffer);
+    console.log("Resultado da verificação:", isValid);
+
+    res.status(200).json({
+      valid: isValid,
+      signedBy: document.signedBy.username,
+      signedAt: document.signedAt
     });
+  } catch (error) {
+    console.error("Erro ao validar assinatura:", error);
+    res.status(500).json({ error: "Erro ao validar assinatura." });
   }
-);
+});
 
-router.post(
-  "/documents/validate", // Definindo a rota POST para validar a assinatura de documentos
-  upload.fields([
-    // Configuração do multer para receber os arquivos (assinatura digital, documento, e certificado)
-    { name: "assinaturaDigital", maxCount: 1 }, // Aceita um arquivo chamado 'assinaturaDigital'
-    { name: "documento", maxCount: 1 }, // Aceita um arquivo chamado 'documento'
-    { name: "certificado", maxCount: 1 }, // Aceita um arquivo chamado 'certificado'
-  ]),
-  async (req, res) => {
-    try {
-      // Verifica se todos os arquivos necessários (assinatura, documento, e certificado) foram enviados
-      if (
-        !req.files ||
-        !req.files["assinaturaDigital"] ||
-        !req.files["documento"] ||
-        !req.files["certificado"]
-      ) {
-        return res
-          .status(400)
-          .send(
-            "Todos os arquivos são obrigatórios: assinaturaDigital, documento e certificado."
-          );
-      }
 
-      // Caminho completo do arquivo de assinatura digital recebido
-      const assinaturaPath = path.join(
-        __dirname,
-        "../",
-        req.files["assinaturaDigital"][0].path
-      );
-      // Caminho completo do arquivo de documento recebido
-      const documentoPath = path.join(
-        __dirname,
-        "../",
-        req.files["documento"][0].path
-      );
-      // Caminho completo do arquivo de certificado digital recebido
-      const certificadoPath = path.join(
-        __dirname,
-        "../",
-        req.files["certificado"][0].path
-      );
+router.post("/documents/:id/sign", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { signature, certificate } = req.body;
 
-      // Leitura dos arquivos recebidos
-      const assinaturaBase64 = fs.readFileSync(assinaturaPath, "utf8");
-      const documento = fs.readFileSync(documentoPath, "utf8");
-      const certificadoPem = fs.readFileSync(certificadoPath, "utf8");
+  // Adicione logs para verificar o que está sendo recebido
+  console.log("Recebido assinatura:", signature);
+  console.log("Recebido certificado:", certificate);
 
-      // Decodificar a assinatura de Base64 para binário
-      const assinatura = forge.util.decode64(assinaturaBase64);
+  // Verifica se a assinatura e o certificado foram fornecidos
+  if (!signature || !certificate) {
+    return res.status(400).json({ error: "Assinatura e certificado são obrigatórios." });
+  }
 
-      // Carregar o certificado do arquivo PEM e extrair a chave pública
-      const cert = forge.pki.certificateFromPem(certificadoPem);
-      const publicKey = cert.publicKey;
+  try {
+    const document = await Document.findById(id);
 
-      // Criar o hash do documento usando SHA-256
-      const md = forge.md.sha256.create();
-      md.update(documento, "utf8");
-
-      // Verificar a assinatura usando a chave pública e o hash do documento
-      const isValid = publicKey.verify(md.digest().bytes(), assinatura);
-
-      // Retornar o resultado da validação (true ou false)
-      res.status(200).json({ valid: isValid });
-    } catch (error) {
-      console.error("Erro ao validar assinatura:", error);
-      res.status(500).json({ error: "Erro ao validar assinatura" });
+    // Verifica se o documento existe
+    if (!document) {
+      return res.status(404).json({ error: "Documento não encontrado" });
     }
+
+    // Verifica se o usuário é o autor do documento
+    if (document.createdBy.toString() !== req.user.id) {
+      return res.status(403).json({ error: "Você não tem permissão para assinar este documento" });
+    }
+
+    // Verifica se o documento já foi assinado
+    if (document.signature) {
+      return res.status(400).json({ error: "Este documento já foi assinado" });
+    }
+
+    // Assinatura já está em Base64
+    const signatureBase64 = signature;
+    console.log("Assinatura em Base64:", signatureBase64);
+
+    // Atualiza o documento com a assinatura e o certificado
+    document.signature = signatureBase64;
+    document.signedBy = req.user.id;
+    document.signedAt = new Date();
+    document.certificate = certificate;
+
+    await document.save();
+    console.log("Documento após salvar:", document);
+
+    // Define o diretório para salvar as assinaturas
+    const assinaturaDir = path.join(__dirname, "../assinaturas");
+
+    // Cria o diretório se não existir
+    if (!fs.existsSync(assinaturaDir)) {
+      fs.mkdirSync(assinaturaDir, { recursive: true });
+    }
+
+    // Define o caminho completo do arquivo de assinatura
+    const assinaturaPath = path.join(assinaturaDir, `assinatura_digital_${id}.txt`);
+
+    // Salva a assinatura no arquivo (em Base64)
+    fs.writeFileSync(assinaturaPath, signatureBase64, 'utf8');
+    console.log("Assinatura salva em:", assinaturaPath);
+
+    res.status(200).json({ message: "Documento assinado com sucesso", document });
+  } catch (error) {
+    console.error("Erro ao assinar documento:", error);
+    res.status(500).json({ error: "Erro ao assinar documento" });
   }
-);
+});
+
+// Rota para baixar a assinatura digital em formato ZIP
+router.get("/documents/:id/signature/zip", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const document = await Document.findById(id);
+
+    if (!document) {
+      return res.status(404).json({ error: "Documento não encontrado" });
+    }
+
+    // Verifica se o usuário é o autor ou o assinante
+    if (
+      document.createdBy.toString() !== req.user.id &&
+      (!document.signedBy || document.signedBy.toString() !== req.user.id)
+    ) {
+      return res.status(403).json({ error: "Você não tem permissão para acessar esta assinatura." });
+    }
+
+    if (!document.signature) {
+      return res.status(400).json({ error: "Este documento ainda não foi assinado." });
+    }
+
+    const assinaturaDir = path.join(__dirname, "../assinaturas");
+    const assinaturaPath = path.join(assinaturaDir, `assinatura_digital_${id}.txt`);
+
+    // Verifica se o arquivo de assinatura existe
+    if (!fs.existsSync(assinaturaPath)) {
+      return res.status(404).json({ error: "Arquivo de assinatura não encontrado." });
+    }
+
+    // Criar o arquivo ZIP
+    const zipFileName = `assinatura_digital_${id}.zip`;
+    res.attachment(zipFileName);
+
+    const archive = archiver("zip", {
+      zlib: { level: 9 }, // Nível de compressão
+    });
+
+    // Lidar com erro de arquivo ZIP
+    archive.on("error", (err) => {
+      console.error("Erro ao criar o arquivo ZIP:", err);
+      res.status(500).json({ error: "Erro ao criar o arquivo ZIP." });
+    });
+
+    // Pipe (enviar) o conteúdo ZIP para o cliente
+    archive.pipe(res);
+
+    // Adicionar o arquivo de assinatura ao ZIP
+    archive.file(assinaturaPath, { name: `assinatura_digital_${id}.txt` });
+
+    // Finaliza o processo de criação do ZIP
+    archive.finalize();
+  } catch (error) {
+    console.error("Erro ao processar o download da assinatura:", error);
+    res.status(500).json({ error: "Erro ao processar o download da assinatura." });
+  }
+});
+
 
 router.post("/documents", authenticateToken, async (req, res) => {
   const { title, content, signDocument } = req.body;
@@ -171,48 +239,6 @@ router.post("/documents", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: "Erro ao criar documento" });
-  }
-});
-
-router.post("/documents/:id/sign", authenticateToken, async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const document = await Document.findById(id);
-
-    if (!document) {
-      return res.status(404).json({ error: "Documento não encontrado" });
-    }
-
-    if (document.createdBy.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({ error: "Você não tem permissão para assinar este documento" });
-    }
-
-    if (document.signature) {
-      return res.status(400).json({ error: "Este documento já foi assinado" });
-    }
-
-    const signedAt = new Date();
-    const user = await User.findById(req.user.id);
-    const sign = crypto.createSign("SHA256");
-    sign.update(document.content + signedAt);
-    sign.end();
-
-    const signature = sign.sign(user.privateKey, "hex");
-
-    document.signedBy = req.user.id;
-    document.signature = signature;
-    document.signedAt = signedAt;
-
-    await document.save();
-
-    res
-      .status(200)
-      .json({ message: "Documento assinado com sucesso", document });
-  } catch (error) {
-    res.status(500).json({ error: "Erro ao assinar documento" });
   }
 });
 
@@ -257,32 +283,5 @@ router.get("/documents/:id", authenticateToken, async (req, res) => {
   }
 });
 
-router.post("/documents/validate/old", authenticateToken, async (req, res) => {
-  const { documentId, signature } = req.body;
-
-  try {
-    const document = await Document.findById(documentId).populate("signedBy");
-
-    if (!document || !document.signedBy) {
-      return res
-        .status(400)
-        .json({ error: "Documento não assinado ou inexistente" });
-    }
-
-    const verify = crypto.createVerify("SHA256");
-    verify.update(document.content + document.signedAt);
-    verify.end();
-
-    const isValid = verify.verify(
-      document.signedBy.publicKey,
-      signature,
-      "hex"
-    );
-
-    res.status(200).json({ valid: isValid, signedAt: document.signedAt });
-  } catch (error) {
-    res.status(500).json({ error: "Erro ao validar assinatura" });
-  }
-});
 
 module.exports = router;

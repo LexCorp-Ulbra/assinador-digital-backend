@@ -9,6 +9,22 @@ const archiver = require("archiver");
 
 router.post("/keys", authenticateToken, async (req, res) => { 
   try {
+    // Extraindo parâmetros do corpo da solicitação
+    const {
+      countryName,
+      stateOrProvinceName,
+      localityName,
+      organizationName,
+      commonName,
+      startDate,       // Opcional, se você quiser personalizar a validade
+      endDate,         // Opcional
+    } = req.body;
+
+    // Validação básica dos parâmetros
+    if (!countryName || !stateOrProvinceName || !localityName || !organizationName || !commonName) {
+      return res.status(400).json({ error: "Todos os campos são obrigatórios." });
+    }
+
     // Gera o par de chaves RSA (pública e privada) com 2048 bits usando a biblioteca forge
     const { privateKey, publicKey } = forge.pki.rsa.generateKeyPair(2048);
 
@@ -19,91 +35,81 @@ router.post("/keys", authenticateToken, async (req, res) => {
     // Criação de um certificado digital X.509
     const cert = forge.pki.createCertificate();
     cert.publicKey = publicKey;  // Associa a chave pública ao certificado
-    cert.serialNumber = "01";  // Define o número de série do certificado (pode ser um valor único)
-    cert.validity.notBefore = new Date();  // Certificado válido a partir da data atual
-    cert.validity.notAfter = new Date();
-    cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);  // Define a validade de 1 ano
+    cert.serialNumber = (Math.floor(Math.random() * 100000)).toString();  // Número de série único
+    cert.validity.notBefore = startDate ? new Date(startDate) : new Date();  // Data de início de validade
+    cert.validity.notAfter = endDate ? new Date(endDate) : new Date();
+    if (!endDate) {
+      cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);  // Validade padrão de 1 ano
+    }
 
-    // Atributos do certificado, como país, estado, localidade, organização e nome comum
+    // Atributos do certificado baseados nos parâmetros fornecidos
     const attrs = [
       {
         name: "countryName",
-        value: "BR",
+        value: countryName,
       },
       {
         shortName: "ST",
-        value: "TO",
+        value: stateOrProvinceName,
       },
       {
         name: "localityName",
-        value: "Palmas",
+        value: localityName,
       },
       {
         name: "organizationName",
-        value: "FC Solutions",
+        value: organizationName,
       },
       {
         shortName: "CN",
-        value: "Seu Nome",
+        value: commonName,
       },
     ];
 
     cert.setSubject(attrs);  // Define os atributos do certificado
-    cert.setIssuer(attrs);  // Define o emissor do certificado (autoassinado)
-    cert.sign(privateKey);  // Assina o certificado usando a chave privada gerada
+    cert.setIssuer(attrs);   // Define o emissor do certificado (autoassinado)
+    cert.sign(privateKey);   // Assina o certificado usando a chave privada gerada
     const certPem = forge.pki.certificateToPem(cert);  // Converte o certificado para o formato PEM
 
-    // Atualiza o usuário no banco de dados com a chave pública
-    const user = await User.findByIdAndUpdate(
-      req.user.id,
-      { publicKey: publicKeyPem },  // Armazena apenas a chave pública no banco de dados
-      { new: true }
-    );
+    // Pasta temporária única para cada usuário
+    const tempDir = path.join(__dirname, "../../documentos", `temp_${req.user.id}_${Date.now()}`);
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir);
+    }
 
-    // Define os caminhos para salvar a chave privada e o certificado no servidor
-    const privateKeyPath = path.join(
-      __dirname,
-      "../documentos",
-      `private_key_${req.user.id}.pem`
-    );
-    const certPath = path.join(__dirname, "../documentos/certificado.pem");
+    // Caminhos dos arquivos
+    const privateKeyPath = path.join(tempDir, `private_key_${req.user.id}.pem`);
+    const certPath = path.join(tempDir, "certificado.pem");
 
-    // Salva a chave privada e o certificado em arquivos no sistema de arquivos
+    // Salva a chave privada e o certificado
     fs.writeFileSync(privateKeyPath, privateKeyPem);
     fs.writeFileSync(certPath, certPem);
 
-    // Define o caminho do arquivo ZIP onde os dois arquivos serão compactados
-    const zipFilePath = path.join(__dirname, "../documentos/chaves.zip");
-    const zip = archiver('zip', {
-      zlib: { level: 9 }  // Nível de compressão máxima para o arquivo ZIP
-    });
+    // Verifica se os arquivos foram salvos
+    if (!fs.existsSync(certPath) || !fs.existsSync(privateKeyPath)) {
+      return res.status(500).send("Erro ao salvar as chaves ou certificado.");
+    }
 
-    // Define o arquivo de saída como "chaves.zip" no cabeçalho da resposta
-    res.attachment('chaves.zip');
-
-    // Envia os dados compactados diretamente no stream de resposta
+    // Compactação em arquivo ZIP
+    const zip = archiver('zip', { zlib: { level: 9 } });
+    res.attachment(`chaves_${Date.now()}.zip`);  // Nome único para o ZIP
     zip.pipe(res);
 
-    // Adiciona os arquivos do certificado e da chave privada ao arquivo ZIP
+    // Adiciona os arquivos ao ZIP
     zip.file(certPath, { name: 'certificado.pem' });
     zip.file(privateKeyPath, { name: 'chave_privada.pem' });
 
-    // Finaliza o processo de compactação e fecha o arquivo ZIP
+    // Finaliza e remove arquivos temporários
     zip.finalize();
-
-    // Após finalizar o envio do ZIP, remove os arquivos temporários (certificado e chave privada)
     zip.on('finish', () => {
-      fs.unlinkSync(certPath);  // Remove o arquivo certificado
-      fs.unlinkSync(privateKeyPath);  // Remove o arquivo chave privada
+      fs.rmSync(tempDir, { recursive: true, force: true });  // Remove a pasta temporária
     });
 
-    // Em caso de erro durante a criação do arquivo ZIP, envia uma resposta de erro ao cliente
     zip.on('error', (err) => {
       console.error("Erro ao gerar zip:", err);
       return res.status(500).send("Erro ao gerar certificado.");
     });
   } catch (error) {
-    // Captura qualquer erro durante o processo e envia uma resposta de erro ao cliente
     console.error("Erro ao gerar chaves:", error);
     res.status(500).json({ error: "Erro ao gerar chaves" });
   }

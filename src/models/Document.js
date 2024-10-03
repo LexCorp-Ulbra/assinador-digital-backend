@@ -1,3 +1,5 @@
+// src/models/Document.js
+
 const mongoose = require("mongoose");
 
 const DocumentSchema = new mongoose.Schema({
@@ -6,16 +8,24 @@ const DocumentSchema = new mongoose.Schema({
     required: true,
   },
   content: {
-    type: String,
+    type: String, // Ou Buffer, dependendo de como você armazena o conteúdo
     required: true,
+  },
+  signature: {
+    type: String, // Armazenando em Base64
+    default: null,
+  },
+  certificate: {
+    type: String, // PEM format
+    default: null,
   },
   signedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
     default: null,
   },
-  signature: {
-    type: String,
+  signedAt: {
+    type: Date,
     default: null,
   },
   createdBy: {
@@ -27,12 +37,6 @@ const DocumentSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
-  signedAt: {
-    type: Date,
-    default: null,
-  },
 });
 
-const Document = mongoose.model("Document", DocumentSchema);
-
-module.exports = Document;
+module.exports = mongoose.model("Document", DocumentSchema);
