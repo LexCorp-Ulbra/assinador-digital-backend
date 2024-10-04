@@ -23,10 +23,7 @@ router.post(
   async (req, res) => {
     try {
       // Verificar se todos os arquivos foram enviados
-      if (
-        !req.files ||
-        !req.files["documento"] ||
-        !req.files["chavePrivada"]) {
+      if (!req.files || !req.files["documento"] || !req.files["chavePrivada"]) {
         return res
           .status(400)
           .send("Documento e chave privada são obrigatórios.");
@@ -45,15 +42,15 @@ router.post(
       );
 
       // Ler o conteúdo dos arquivos
-      const documentContent = fs.readFileSync(documentPath, "utf8");
+      const documentContent = fs.readFileSync(documentPath); // Ler conteúdo em binário
       const privateKeyPem = fs.readFileSync(privateKeyPath, "utf8");
 
-      // Converter a chave privada e o certificado do formato PEM para objetos utilizáveis com forge
+      // Converter a chave privada do formato PEM para objeto utilizável com forge
       const privateKey = forge.pki.privateKeyFromPem(privateKeyPem);
 
       // Gerar o hash do documento usando SHA-256
       const md = forge.md.sha256.create();
-      md.update(documentContent, "utf8");
+      md.update(documentContent.toString("binary")); // Usar o conteúdo binário do documento
 
       // Assinar o hash do documento com a chave privada
       const signature = privateKey.sign(md);
@@ -134,9 +131,9 @@ router.post(
       );
 
       // Leitura dos arquivos recebidos
-      const assinaturaBase64 = fs.readFileSync(assinaturaPath, "utf8");
-      const documento = fs.readFileSync(documentoPath, "utf8");
-      const certificadoPem = fs.readFileSync(certificadoPath, "utf8");
+      const assinaturaBase64 = fs.readFileSync(assinaturaPath, "utf8"); // Assinatura em base64
+      const documento = fs.readFileSync(documentoPath); // Ler o documento como binário (sem 'utf8')
+      const certificadoPem = fs.readFileSync(certificadoPath, "utf8"); // Certificado em formato PEM
 
       // Decodificar a assinatura de Base64 para binário
       const assinatura = forge.util.decode64(assinaturaBase64);
@@ -147,10 +144,15 @@ router.post(
 
       // Criar o hash do documento usando SHA-256
       const md = forge.md.sha256.create();
-      md.update(documento, "utf8");
+      md.update(documento.toString("binary")); // Atualizar o hash com o conteúdo binário do documento
 
       // Verificar a assinatura usando a chave pública e o hash do documento
       const isValid = publicKey.verify(md.digest().bytes(), assinatura);
+
+      // Limpeza: remover os arquivos temporários após a validação
+      fs.unlinkSync(assinaturaPath);
+      fs.unlinkSync(documentoPath);
+      fs.unlinkSync(certificadoPath);
 
       // Retornar o resultado da validação (true ou false)
       res.status(200).json({ valid: isValid });
@@ -160,7 +162,6 @@ router.post(
     }
   }
 );
-
 
 // ROTAS CORDEIRO
 
@@ -342,11 +343,9 @@ router.get(
         document.createdBy.toString() !== req.user.id &&
         (!document.signedBy || document.signedBy.toString() !== req.user.id)
       ) {
-        return res
-          .status(403)
-          .json({
-            error: "Você não tem permissão para acessar esta assinatura.",
-          });
+        return res.status(403).json({
+          error: "Você não tem permissão para acessar esta assinatura.",
+        });
       }
 
       if (!document.signature) {

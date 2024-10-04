@@ -60,7 +60,7 @@ router.post("/keys", authenticateToken, async (req, res) => {
       { name: "basicConstraints", cA: true }, // Certificado CA (pode assinar outros certificados)
       { name: "keyUsage", keyCertSign: true, digitalSignature: true }, // Permissão para assinar outros certificados
     ]);
-    certificadoRaiz.sign(chavesRaiz.privateKey); // Certificado assinado com a chave privada do CA raiz
+    certificadoRaiz.sign(chavesRaiz.privateKey, forge.md.sha256.create()); // Certificado assinado com a chave privada do CA raiz
 
     // 2. Gera o par de chaves para o Certificado Intermediário
     const chavesIntermediario = forge.pki.rsa.generateKeyPair(2048);
@@ -87,7 +87,7 @@ router.post("/keys", authenticateToken, async (req, res) => {
       { name: "basicConstraints", cA: true }, // Certificado intermediário pode assinar outros certificados
       { name: "keyUsage", keyCertSign: true, digitalSignature: true }, // Permissão para assinar certificados
     ]);
-    certificadoIntermediario.sign(chavesRaiz.privateKey); // Certificado intermediário assinado pelo CA raiz
+    certificadoIntermediario.sign(chavesRaiz.privateKey, forge.md.sha256.create()); // Certificado intermediário assinado pelo CA raiz
 
     // 3. Gera o par de chaves para o Certificado Final
     const chavesFinal = forge.pki.rsa.generateKeyPair(2048);
@@ -115,7 +115,7 @@ router.post("/keys", authenticateToken, async (req, res) => {
       { name: "basicConstraints", cA: false }, // Não pode assinar outros certificados
       { name: "keyUsage", digitalSignature: true, keyEncipherment: true }, // Uso para assinatura digital e criptografia
     ]);
-    certificadoFinal.sign(chavesIntermediario.privateKey); // Certificado final assinado pelo intermediário
+    certificadoFinal.sign(chavesIntermediario.privateKey, forge.md.sha256.create()); // Certificado final assinado pelo intermediário
 
     // 4. Converter certificados e chaves para formato PEM
     const certificadoRaizPem = forge.pki.certificateToPem(certificadoRaiz);
@@ -170,8 +170,12 @@ router.post("/keys", authenticateToken, async (req, res) => {
     // Finaliza o processo de compactação e remove os arquivos temporários após o download
     zip.finalize();
     zip.on("finish", () => {
-      fs.unlinkSync(certPath);  // Remove o arquivo certificado
-      fs.unlinkSync(privateKeyPath);  // Remove o arquivo chave privada
+      fs.unlinkSync(certificadoRaizPath);  // Remove o arquivo certificado
+      fs.unlinkSync(certificadoIntermediarioPath);  // Remove o arquivo chave privada
+      fs.unlinkSync(certificadoFinalPath);  // Remove o arquivo certificado
+      fs.unlinkSync(chavePrivadaRaizPath);  // Remove o arquivo chave privada
+      fs.unlinkSync(chavePrivadaIntermediarioPath);  // Remove o arquivo certificado
+      fs.unlinkSync(chavePrivadaFinalPath);  // Remove o arquivo chave privada
     });
 
     // Tratamento de erros durante a geração do arquivo ZIP
